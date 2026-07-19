@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { useDashboardData } from "../hooks/useData";
+import { catColor, TIME_HORIZONS } from "../constants";
 import {
   LineChart,
   Line,
@@ -11,24 +12,6 @@ import {
   Legend,
   ReferenceLine,
 } from "recharts";
-
-const CAT_COLORS: Record<string, string> = {
-  Politics: "#2563eb",
-  Economics: "#10b981",
-  Sports: "#ef4444",
-  Entertainment: "#f59e0b",
-  "Climate and Weather": "#06b6d4",
-  Elections: "#8b5cf6",
-  Financials: "#ec4899",
-  Crypto: "#f97316",
-  Companies: "#84cc16",
-  World: "#6366f1",
-  Mentions: "#14b8a6",
-  "Science and Technology": "#a855f7",
-  Social: "#78716c",
-};
-
-const TIME_HORIZONS = ["30+ days", "7-30 days", "1-7 days", "< 24 hours"];
 
 export function CalibrationExplorer() {
   const { data: dash, loading: ld } = useDashboardData();
@@ -106,12 +89,12 @@ export function CalibrationExplorer() {
                   style={{
                     padding: "0.2rem 0.6rem",
                     fontSize: "0.75rem",
-                    border: `2px solid ${CAT_COLORS[cat] || "#666"}`,
+                    border: `2px solid ${catColor(cat)}`,
                     borderRadius: 4,
                     background: selectedCats.includes(cat)
-                      ? CAT_COLORS[cat] || "#666"
+                      ? catColor(cat)
                       : "white",
-                    color: selectedCats.includes(cat) ? "white" : CAT_COLORS[cat] || "#666",
+                    color: selectedCats.includes(cat) ? "white" : catColor(cat),
                     cursor: "pointer",
                     fontWeight: 600,
                   }}
@@ -165,7 +148,7 @@ export function CalibrationExplorer() {
                       data={entry.cal_curve}
                       type="monotone"
                       dataKey="realized_frequency"
-                      stroke={CAT_COLORS[cat] || "#666"}
+                      stroke={catColor(cat)}
                       strokeWidth={2}
                       dot={{ r: 4 }}
                       name={`${cat} (BS=${entry.brier.toFixed(3)}, n=${entry.n})`}
@@ -215,7 +198,7 @@ export function CalibrationExplorer() {
             const entry = dash.domain_time_matrix[cat]?.[selectedHorizon];
             if (!entry) return null;
             return (
-              <div key={cat} className="stat-card" style={{ borderTop: `3px solid ${CAT_COLORS[cat] || "#666"}` }}>
+              <div key={cat} className="stat-card" style={{ borderTop: `3px solid ${catColor(cat)}` }}>
                 <div className="stat-value">{entry.brier.toFixed(4)}</div>
                 <div className="stat-label">{cat}</div>
                 <div style={{ fontSize: "0.7rem", color: "var(--gray-500)" }}>

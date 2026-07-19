@@ -119,11 +119,26 @@ def compute_market_features(conn: sqlite3.Connection) -> pd.DataFrame:
 
         duration_hours = (close_time - open_time).total_seconds() / 3600
 
+        # Drop candles at or after close. Post-close candles carry the settled
+        # price (0.99/0.01), which would score as a near-perfect forecast.
+        mp = mp[mp["dt"] < close_time]
+        if mp.empty:
+            continue
+
+        # Observation spacing. Markets without daily candles are backfilled with
+        # hourly ones, so any per-observation statistic is on a different clock
+        # for them. Everything below is normalised to a per-day basis instead.
+        interval_hours = float(mp["period_interval"].median()) / 60.0
+        if not np.isfinite(interval_hours) or interval_hours <= 0:
+            interval_hours = 24.0
+        is_hourly_clock = interval_hours < 24.0
+        obs_per_day = 24.0 / interval_hours
+
         # Volume features
         total_volume = mp["volume_fp"].sum()
-        n_days = max(len(mp), 1)
-        avg_daily_volume = total_volume / n_days
-        max_daily_volume = mp["volume_fp"].max()
+        duration_days = max(duration_hours / 24.0, 1.0 / 24.0)
+        avg_daily_volume = total_volume / duration_days
+        max_daily_volume = mp["volume_fp"].max() * obs_per_day
 
         # Price at different times before resolution
         last_price = mp["price_close"].iloc[-1]
@@ -143,14 +158,17 @@ def compute_market_features(conn: sqlite3.Connection) -> pd.DataFrame:
         spreads = mp["yes_ask_close"] - mp["yes_bid_close"]
         avg_spread = spreads.mean() if not spreads.isna().all() else np.nan
 
-        # Volatility: std of price changes
+        # Volatility: std of price changes, scaled to a per-day basis so hourly
+        # and daily markets are comparable (random walk: sigma_day = sigma_step
+        # * sqrt(steps per day)).
+        day_scale = np.sqrt(obs_per_day)
         price_changes = mp["price_close"].diff()
-        volatility = price_changes.std() if len(price_changes) > 1 else np.nan
+        volatility = price_changes.std() * day_scale if len(price_changes) > 1 else np.nan
 
         # Late volatility: std of price changes in last 24 hours before close
         last_24h = mp[mp["dt"] >= (close_time - timedelta(hours=24))]
         if len(last_24h) > 1:
-            late_volatility = last_24h["price_close"].diff().std()
+            late_volatility = last_24h["price_close"].diff().std() * day_scale
         else:
             late_volatility = np.nan
 
@@ -164,10 +182,12 @@ def compute_market_features(conn: sqlite3.Connection) -> pd.DataFrame:
         # Price range: max - min observed price (measures uncertainty)
         price_range = mp["price_close"].max() - mp["price_close"].min()
 
-        # Volume concentration: what fraction of volume in last 25% of observations
-        if len(mp) >= 4:
-            cutoff = len(mp) * 3 // 4
-            late_vol = mp.iloc[cutoff:]["volume_fp"].sum()
+        # Volume concentration: fraction of volume traded in the last 25% of the
+        # market's life. Measured over elapsed time, not row count, so it means
+        # the same thing on both clocks.
+        if len(mp) >= 4 and duration_hours > 0:
+            late_start = close_time - timedelta(hours=duration_hours * 0.25)
+            late_vol = mp[mp["dt"] >= late_start]["volume_fp"].sum()
             late_volume_share = late_vol / max(total_volume, 1e-9)
         else:
             late_volume_share = np.nan
@@ -180,9 +200,19 @@ def compute_market_features(conn: sqlite3.Connection) -> pd.DataFrame:
         else:
             liquidity = "low"
 
-        # Brier score for last price
+        # Brier scores. The last-tick score flatters categories whose outcome is
+        # public before the market closes (a called election trades at 0.99 for
+        # days), so it is kept only as a diagnostic. The fixed-horizon scores are
+        # the ones that actually test forecasting.
         outcome = market["result_binary"]
         brier = (last_price - outcome) ** 2 if not np.isnan(last_price) else np.nan
+
+        def brier_at(price):
+            return (price - outcome) ** 2 if not np.isnan(price) else np.nan
+
+        brier_1d = brier_at(price_1d)
+        brier_3d = brier_at(price_3d)
+        brier_7d = brier_at(price_7d)
 
         features.append({
             "market_ticker": ticker,
@@ -197,6 +227,8 @@ def compute_market_features(conn: sqlite3.Connection) -> pd.DataFrame:
             "settlement_ts": market["settlement_ts"],
             "duration_hours": duration_hours,
             "n_price_observations": len(mp),
+            "obs_per_day": obs_per_day,
+            "is_hourly_clock": int(is_hourly_clock),
             "total_volume": total_volume,
             "avg_daily_volume": avg_daily_volume,
             "max_daily_volume": max_daily_volume,
@@ -212,6 +244,9 @@ def compute_market_features(conn: sqlite3.Connection) -> pd.DataFrame:
             "late_volume_share": late_volume_share,
             "liquidity_bucket": liquidity,
             "brier_score": brier,
+            "brier_1d_before": brier_1d,
+            "brier_3d_before": brier_3d,
+            "brier_7d_before": brier_7d,
         })
 
     return pd.DataFrame(features)
@@ -244,42 +279,72 @@ def build_calibration_dataset(conn: sqlite3.Connection) -> pd.DataFrame:
     - implied probability (yes price)
     - days to resolution
     - eventual outcome
-    - liquidity features
+    - liquidity features, measured as of the observation (see pit_* columns)
     """
     prices = load_price_history_df(conn)
     markets = load_markets_df(conn)
 
     # Merge market-level volume info (prices already has result_binary)
-    market_info = markets[["ticker", "volume"]].rename(
+    market_info = markets[["ticker", "volume", "open_time"]].rename(
         columns={"ticker": "market_ticker", "volume": "total_market_volume"}
     )
     df = prices.merge(market_info, on="market_ticker", how="inner")
 
     # Compute days to resolution
     df["close_dt"] = pd.to_datetime(df["close_time"], utc=True, format="ISO8601")
+    df["open_dt"] = pd.to_datetime(df["open_time"], utc=True, format="ISO8601")
     df["days_to_resolution"] = (df["close_dt"] - df["dt"]).dt.total_seconds() / 86400
 
     # Implied probability = price_close (yes price in dollars = probability)
     df["implied_prob"] = df["price_close"]
 
-    # Liquidity bucket
+    # Spread
+    df["spread"] = df["yes_ask_close"] - df["yes_bid_close"]
+
+    # Drop observations at or after close before anything is accumulated: the
+    # settled price is not a forecast, and including it scores as near-perfect.
+    df = df[df["days_to_resolution"] > 0]
+    df = df.dropna(subset=["implied_prob"])
+
+    # Liquidity bucket. Left-inclusive so zero-volume markets bucket as "low"
+    # rather than dropping to NaN.
     df["liquidity_bucket"] = pd.cut(
         df["total_market_volume"],
-        bins=[0, 1000, 10000, float("inf")],
+        bins=[-float("inf"), 1000, 10000, float("inf")],
         labels=["low", "medium", "high"],
     )
 
-    # Spread
-    df["spread"] = df["yes_ask_close"] - df["yes_bid_close"]
+    # Duration is fixed at open, so it is known to a trader standing at any
+    # observation and is safe to use as-is.
+    df["duration_hours"] = (df["close_dt"] - df["open_dt"]).dt.total_seconds() / 3600
+
+    # ── Point-in-time microstructure, computed from the market's past only ──
+    # Whole-market aggregates (total volume, lifetime price range, mean spread)
+    # describe the future relative to any observation before close. Using them
+    # as controls leaks the outcome: lifetime price range in particular encodes
+    # how far the price eventually travelled. These expanding versions use only
+    # candles up to and including the current one.
+    df = df.sort_values(["market_ticker", "timestamp"])
+    g = df.groupby("market_ticker", sort=False)
+
+    df["pit_cum_volume"] = g["volume_fp"].cumsum()
+    df["pit_avg_spread"] = g["spread"].expanding().mean().reset_index(level=0, drop=True)
+    df["pit_price_range"] = (
+        g["implied_prob"].cummax() - g["implied_prob"].cummin()
+    )
+    df["pit_n_obs"] = g.cumcount() + 1
+    df["pit_elapsed_days"] = (df["dt"] - df["open_dt"]).dt.total_seconds() / 86400
 
     # Keep relevant columns
     keep = [
         "market_ticker", "event_ticker", "category", "dt", "timestamp",
         "implied_prob", "result_binary", "days_to_resolution",
         "volume_fp", "open_interest_fp", "spread",
-        "total_market_volume", "liquidity_bucket",
+        "total_market_volume", "liquidity_bucket", "duration_hours",
+        "pit_cum_volume", "pit_avg_spread", "pit_price_range",
+        "pit_n_obs", "pit_elapsed_days",
     ]
-    return df[[c for c in keep if c in df.columns]].dropna(subset=["implied_prob"])
+    return df[[c for c in keep if c in df.columns]]
 
 
 if __name__ == "__main__":

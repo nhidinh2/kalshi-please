@@ -2,77 +2,76 @@
 
 **Do Kalshi prices mean the same thing across categories and time horizons?**
 
-A 70-cent contract implies a 70% probability — but does that hold equally for politics at 30 days out versus crypto at 7 days out? This project measures calibration across domains and time, identifies what drives the differences, tests whether domain effects survive microstructure controls, and builds an out-of-sample recalibration layer.
+A 70-cent contract implies a 70% probability — but does that hold equally for politics at 30 days out versus crypto at 7 days out? This project measures calibration across domains and time, tests whether domain differences survive microstructure controls, and asks whether an out-of-sample recalibration layer can exploit them.
 
 **[Live Dashboard](https://dist-zeta-jade-85.vercel.app)** — interactive charts, calibration curves, and the full research report.
 
-For a more detailed walkthrough of the analysis with code and plots, see [`analysis.ipynb`](analysis.ipynb).
+For a detailed walkthrough with code and plots, see [`analysis.ipynb`](analysis.ipynb).
+
+> **A note on the numbers.** An earlier version of this study reported much stronger findings (a 4× calibration spread, an out-of-sample recalibration gain, a Crypto "sign flip"). Several of those rested on measurement artifacts — scoring the final traded price after outcomes were public, using whole-lifetime market aggregates as controls (which leak the outcome), a broken bootstrap, and non-clustered standard errors. This version fixes them. The corrected findings are weaker and, in one case, reverse. That is the honest result, and the methodology section explains each correction.
 
 ## Findings
 
-### A 70% price does not mean the same thing everywhere
+### The final traded price is not a forecast
 
-Politics at 70% resolves correctly far more often than financials at 70%. Calibration varies by 4x across categories:
+The single most important correction. Scoring a market by its *last* traded price flatters any category whose outcome becomes public before the market technically closes — a called election trades at 0.99 for days. Measured that way, Elections score a Brier of 0.0004 and Social 0.0004, which looks like near-perfect forecasting but is really just reading the answer off the back of the book.
 
-| Domain | Brier | Trust Level | Notes |
+Scored one day before close — while the outcome is still genuinely uncertain — the ranking changes and the whole board gets worse:
+
+| Domain | Brier @ last tick | Brier @ 1 day before | Markets (1d) |
 |---|---|---|---|
-| Politics | 0.056 | High | Tight spreads, high volume, long duration |
-| Entertainment | 0.050 | High (near resolution) | Improves from 0.190 to 0.050 over market life |
-| Economics | 0.068 | Moderate | Reasonable microstructure |
-| Crypto | 0.085 | Moderate (addressable) | After controls, coefficient flips *negative* — raw gap is entirely microstructure |
-| Sports | 0.127 | Low | Noisy despite 4.6x more volume than Politics |
-| Companies | 0.168 | Low | Associated with wide spreads, late surprise moves |
-| Mentions | 0.244 | Unreliable | Few observations, wide spreads |
-| Financials | 0.245 | Unreliable | Worst at every horizon |
+| Climate and Weather | 0.090 | **0.107** | 22 |
+| Politics | 0.056 | **0.160** | 57 |
+| Science and Technology | 0.003 | 0.168 | 6 |
+| World | 0.005 | 0.169 | 11 |
+| Companies | 0.168 | 0.243 | 40 |
+| Entertainment | 0.050 | 0.308 | 43 |
+| Elections | 0.0004 | 0.361 | 16 |
+| Sports | 0.127 | 0.340 | 70 |
+| Financials | 0.245 | 0.395 | 21 |
+| Economics | 0.068 | **0.535** | 29 |
+| Social | 0.0004 | **0.599** | 10 |
 
-### What is associated with poor calibration
+Politics and Climate genuinely forecast well a day out (~0.11–0.16). Economics and Social — which looked mid-pack or excellent at the last tick — are barely better than a coin flip once you score them before the result is known. Small categories (Crypto n=4, Sci/Tech n=6 at this horizon) are too thin to rank and are shown for completeness only.
 
-At the category level (Spearman rank correlations):
+### Domain still carries independent signal, but less than it first appeared
 
-- **Late price moves** (r=+0.72, p=0.005) — the strongest correlate. Categories with large last-minute price shifts tend to calibrate worse.
-- **Late volume concentration** (r=+0.54, p=0.047) — back-loaded trading is associated with poorer price discovery.
-- **Short duration** (r=-0.66, p=0.011) and **few price updates** (r=-0.61, p=0.022) — consistent with information aggregation requiring time.
-- **Wide bid-ask spreads** (r=+0.27, p<0.001 at market level) — suggesting less competition and noisier signals.
+Five OLS models on the observation-level data (~15,800 price observations in 483 markets) progressively add microstructure controls. Two things changed versus the original write-up: the controls are now **point-in-time** (computed from each market's past as of the observation, not its whole life), and standard errors are **clustered by market** (observations from one market share a price path and are far from independent).
 
-### Domain effects survive controls
+| Model | R² |
+|---|---|
+| Domain only | 13.8% |
+| Domain + horizon | 14.3% |
+| Domain + horizon + point-in-time controls | 14.7% |
+| Controls only (no domain) | 9.9% |
+| Domain × horizon + controls | 16.9% |
 
-Five OLS models progressively add microstructure controls (volume, spread, duration, price range, base rate imbalance). The key test: does domain still matter after controlling for everything?
+**R² lift from domain: +4.9%.** Domain adds explanatory power beyond microstructure. But the observation-level R² is **14.7%, not the 23% reported earlier** — the gap was lookahead: the old "price range" control was computed over the market's entire life, so it partly encoded how far the price eventually travelled toward the outcome it was supposed to predict.
 
-| Model | R² | Adj R² |
-|---|---|---|
-| Domain only | 13.8% | 13.7% |
-| Domain + horizon | 14.3% | 14.2% |
-| Domain + horizon + controls | 23.0% | 22.9% |
-| Controls only (no domain) | 18.2% | 18.2% |
-| Domain × horizon + controls | 24.7% | 24.4% |
+Under clustered standard errors, **5 of 12 categories remain significantly different from Politics** (Companies, Financials, Mentions, Social, Sports) — not the 11 claimed before. Clustering roughly triples the honest standard errors, so most category effects that looked significant under IID errors no longer clear the bar. Of the domain × horizon interactions, 11 of 36 are significant.
 
-**R² lift from domain: +4.7%.** Controls account for roughly half the gap (Financials drops from +0.38 to +0.20), but 11 of 12 categories remain significant (p<0.05). Domain itself retains independent predictive power. 23 of 36 domain × horizon interactions are significant — categories differ not just in level but in how they respond to time.
+### Financials really is worse; the "Crypto flips sign" story does not survive
 
-**Robustness:** Domain effects survive across five alternative control specifications (minimal, microstructure-only, full, no-spread, no-volume). R² lift ranges from +0.047 to +0.122. The Crypto sign-flip is stable across all specifications.
+**Financials** is the most robustly poorly-calibrated category. Coefficient +0.38 raw, +0.32 after point-in-time controls (p=0.001), widest spreads, shortest duration. Microstructure explains little of the gap — financial outcomes appear intrinsically hard to forecast.
 
-### Surprising cases
+**Crypto no longer flips.** The original claim was that Crypto looks worse than Politics raw (+0.11) but *better* after controls (−0.08), attributed to its short duration. That reversal was an artifact of the lookahead controls. With point-in-time controls, Crypto's coefficient goes from +0.09 raw to +0.06 controlled — it never crosses zero, and it is not significantly different from Politics (p=0.25). Restricting to markets with genuine daily candles (dropping the hourly-backfilled ones, which are disproportionately Crypto and Sports) gives +0.04, also not significant. The honest statement is: **Crypto is indistinguishable from Politics**, not better than it.
 
-**Crypto flips sign.** Raw coefficient: +0.11 (worse than Politics). After controls: -0.08 (better). The reversal is consistent with Crypto's short duration (median 25 hrs vs 1,975 for Politics). The duration coefficient alone (-0.000015/hr × 1,950 hrs ≈ -0.03) accounts for a large share of the shift. The raw underperformance appears fully attributable to microstructure — longer-duration Crypto markets would likely calibrate as well as or better than Politics.
+**Sports** stays significantly worse (+0.15, p=0.01) and survives the daily-only check (+0.12, p=0.02) — so its poor calibration is not a clock artifact. It has 4.6× Politics' volume yet worse calibration; volume here does not buy accuracy.
 
-**Science & Technology flips the other way.** Raw: -0.07 (looks better than Politics). After controls: +0.04 (worse). Sci/Tech has a narrow price range (median 0.06 vs 0.25). The price range coefficient (+0.245/unit) provides a mechanical advantage that compresses squared errors regardless of forecast quality. The raw excellence appears partly an artifact of constrained outcome space.
+### Bootstrap confidence intervals (now valid)
 
-**Financials: half survives.** Coefficient drops 47% from +0.38 to +0.20. Widest spreads (0.124), shortest duration (71 hrs), lowest volume (7.4K). Microstructure accounts for roughly half the gap, but the residual remains highly significant — consistent with financial outcomes being intrinsically harder to forecast.
+The original bootstrap collapsed duplicate draws via `.isin()`, turning each "replicate" into a ~63% subsample and widening every interval. Resampling markets with correct multiplicity, **5 of 12 domain effects have 95% CIs excluding zero**: Companies, Financials, Mentions, Sports (worse than Politics) and Science & Technology (better). The rest, including Crypto and Climate, are indistinguishable from Politics.
 
-**Sports: volume ≠ accuracy.** 4.6x Politics' volume yet worse calibration. The volume coefficient is *positive* (+0.010), suggesting high volume here reflects uncertainty-driven trading rather than informative price discovery.
+### Out-of-sample recalibration does not reliably help
 
-### Out-of-sample recalibration
+A Platt-scaling recalibration layer per (category, horizon), evaluated with 5-fold cross-validation split by market. The headline changed sign under scrutiny.
 
-5-fold cross-validation (split by market, no data leakage) with Platt scaling per (category, horizon) group:
+- **Overall: −0.6% Brier, ± 0.7% (SE) across 10 fold splits** — indistinguishable from zero. The earlier "+1.5% improvement" came from a single lucky fold split; re-running with different splits, the number swings between −5.6% and +2.2% and averages slightly negative. **The layer does not improve calibration overall.**
+- Where it *does* help is exactly where miscalibration is large: **Crypto +65%, Financials +60%, Companies +20%**. Where it hurts is small or already-good categories: **Science & Technology −256%, World −82%, Climate −67%**. It is a redistribution, not a free lunch, and on this sample the losses roughly cancel the gains.
 
-- **Overall: +1.5% Brier improvement** — modest but confirms the signal is real
-- **Financials: +86.4%** — the worst-calibrated category benefits most
-- **Crypto: +27.3%**, **Social: +22.7%**
-- Small categories degrade (World -98.5%, Climate -47.1%) — insufficient data for stable fits
-- **Bootstrap CIs:** 7 of 12 domain effects have 95% confidence intervals excluding zero
+A domain-adjusted probability model (logistic regression, price + domain + horizon) does earn a real **+5.2% out-of-sample Brier improvement** over raw price — domain and horizon carry exploitable signal. But *adding* microstructure features to that model makes it **worse** (+1.5%, below domain alone), because the microstructure edge in the original write-up came from the same lookahead that inflated the regression R².
 
-The recalibration layer helps most where it's needed most and fails where sample sizes are too small — the pattern expected from a real signal rather than overfitting.
-
-A domain-adjusted probability model (logistic regression with raw price + domain + horizon) achieves **+8.4% Brier improvement** out-of-sample over raw Platt scaling — confirming these effects are exploitable.
+**Bottom line:** category and horizon do mean something beyond raw price, and a model conditioning on them beats raw price out-of-sample. But the effect is modest, concentrated in a few badly-calibrated categories, and does not support a general-purpose recalibration layer.
 
 ## How It Works
 
@@ -82,53 +81,40 @@ A domain-adjusted probability model (logistic regression with raw price + domain
 python run_analysis.py --all    # ingest → features → analyze → export
 ```
 
-**1. Ingest** (`src/ingest/`) — Pulls resolved binary markets from the Kalshi public API across 15 categories. Fetches daily candlestick data with hourly backfill for short-lived markets.
+**1. Ingest** (`src/ingest/`) — Pulls resolved binary markets from the Kalshi public API. Fetches daily candlestick data, with hourly backfill for short-lived markets that lack daily candles.
 
-**2. Features** (`src/processing/features.py`) — Computes per-market features: duration, volume, prices at 1/3/7 days before resolution, bid-ask spread, volatility, late price moves, price range, late volume share, Brier score. Builds a calibration dataset where each row is one (market, timestamp) observation.
+**2. Features** (`src/processing/features.py`) — Computes per-market features: duration, volume, prices at 1/3/7 days before resolution, spread, volatility, price range, Brier scores at the last tick *and* at fixed horizons. Builds an observation-level calibration dataset with **point-in-time** microstructure (expanding aggregates using only each observation's past) and drops post-close candles. Clock-dependent features (volatility, volume share) are normalized to a per-day basis so hourly-backfilled markets are comparable.
 
 **3. Analysis** (`src/analysis/calibration.py`) — Seven analyses:
 - **A.** Accuracy over time (4 horizons)
 - **B.** Domain × time interaction matrix
 - **C.** Liquidity/volume effect
-- **D.** Explanatory correlations + auto-generated category narratives
-- **E.** Five OLS models with progressive controls + robustness checks across alternative control sets
-- **F.** Out-of-sample recalibration (5-fold CV, Platt scaling, bootstrap CIs)
-- **G.** Domain-adjusted probability model + sample-size diagnostics
+- **D.** Explanatory correlations + category narratives
+- **E.** Five OLS models with progressive point-in-time controls, clustered SEs
+- **F.** Out-of-sample recalibration (5-fold CV, Platt scaling, seed-stability check, corrected bootstrap CIs)
+- **G.** Domain-adjusted probability model + robustness (alternative control sets, daily-only subsample, sample-size diagnostics)
 
-**4. Dashboard** (`dashboard/`) — React + TypeScript + Recharts with four pages:
-- **Overview** — Stat cards, Brier by category, Brier by horizon, domain × time heatmap
-- **Calibration Explorer** — Interactive calibration curves with category/time/liquidity toggles and per-slice stats
-- **Domain Effects** — Regression verdict, model comparison, before/after coefficients, bootstrap CIs, collapsible diagnostics (controls, narratives, correlations, scatter plots)
-- **Practical Use** — Recalibration results, per-category improvement, searchable market table with price path detail
+**4. Dashboard** (`dashboard/`) — React + TypeScript + Recharts. Overview, Calibration Explorer, Domain Effects, Practical Use.
 
 ### Architecture
 
 ```
-├── analysis.ipynb              # Full research notebook (8 sections)
+├── analysis.ipynb              # Research notebook
 ├── run_analysis.py             # Pipeline entry point
 ├── src/
-│   ├── ingest/
-│   │   ├── kalshi_client.py    # Rate-limited API client
-│   │   ├── database.py         # SQLite with upsert logic
-│   │   └── pipeline.py         # Category-diverse collection
-│   ├── processing/
-│   │   └── features.py         # Feature engineering
-│   └── analysis/
-│       └── calibration.py      # All analyses + plotting
+│   ├── ingest/                 # API client, SQLite, collection
+│   ├── processing/features.py  # Feature engineering (point-in-time)
+│   └── analysis/calibration.py # All analyses + plotting
 ├── dashboard/                  # React + Vite + Recharts
-│   └── src/pages/
-│       ├── AccuracyDashboard   # Overview
-│       ├── CalibrationExplorer # Calibration curves
-│       ├── DomainEffects       # Regression + CIs
-│       └── PracticalUse        # Recalibration + market explorer
 └── data/                       # Generated: DB, CSVs, plots, JSON
 ```
 
 ## Data
 
 - **Source:** Kalshi public API (no authentication required)
-- **Scope:** 496 resolved binary markets, 15 categories, 15,834 price observations
-- **Price data:** Daily candlesticks with hourly backfill for short-lived markets
+- **Scope:** ~430 resolved binary markets, 13 reported categories, ~15,800 pre-close price observations
+- **Price data:** Daily candlesticks, with hourly backfill for short-lived markets (36 markets, flagged and normalized)
+- **Selection:** markets are drawn top-by-volume within each category (see Limitations) — the sample is not a random draw of Kalshi markets
 
 ## Setup
 
@@ -146,14 +132,26 @@ python run_analysis.py --export       # Export JSON for dashboard
 cd dashboard && npm install && npm run dev
 ```
 
+## What changed from the first version, and why
+
+Each fix and the direction it moved the result:
+
+- **Scored the last traded price** → also score 1/3/7 days before close. The last tick reads outcomes that are already public; fixed-horizon Brier is the real test. *Effect: the category ranking changes and every category looks worse.*
+- **Whole-lifetime controls (price range, volume, spread)** → point-in-time expanding versions. Lifetime aggregates describe each market's future relative to the observation being predicted; lifetime price range in particular leaks the outcome. *Effect: observation-level R² drops from 23% to 14.7%.*
+- **IID standard errors** → clustered by market. ~15,800 observations come from only ~480 markets and are highly correlated within market. *Effect: significant categories drop from 11 to 5.*
+- **Broken bootstrap** (`.isin()` collapsed duplicate draws) → resample markets with correct multiplicity. *Effect: intervals tighten; 5 of 12 effects exclude zero.*
+- **Single-split recalibration number** → mean ± SE across 10 fold splits. *Effect: +1.5% gain revealed as split noise; true effect ≈ 0.*
+- **Hourly/daily clock mismatch** → per-day normalization + a daily-only robustness check. *Effect: the Crypto sign-flip disappears.*
+- **`statsmodels` missing from requirements** → added. *Effect: the pipeline runs from a clean install.*
+
 ## Limitations
 
-- Sample skews toward recently settled markets; some categories have few markets
-- Historical candlestick availability varies — not all markets have retrievable price history
-- Hourly backfill for short-lived markets creates uneven observation density
-- Observation-level R² is 23% — substantial for cross-sectional market data, but individual outcomes remain noisy
-- Standard errors assume independence across observations within the same market; clustered SEs would strengthen inference
-- Sample-size diagnostics show instability for some category effects at <50% of data
+- **Selection bias:** markets are chosen top-by-volume within each category, so the sample is range-restricted on volume — the very variable Analysis C studies and that appears as a control throughout. Findings describe high-volume markets, not Kalshi as a whole.
+- **Small categories are unstable:** several categories have fewer than 20 markets, and the fixed-horizon Brier scores for them rest on a handful of markets. Treat per-category numbers below ~20 markets as suggestive only.
+- **Fixed-horizon Brier is right-censored:** the 7-day-before score only exists for markets that lived at least 7 days, which is itself a biased subset.
+- **Sample skews toward recently settled markets** and historical candlestick availability varies.
+- **Point-in-time controls remove lookahead but not endogeneity:** contemporaneous spread and accumulated volume are still jointly determined with price quality.
+- Individual outcomes remain noisy; 14.7% observation-level R² is substantial for cross-sectional market data but leaves most variance unexplained.
 
 ## Technology
 

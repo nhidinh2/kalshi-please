@@ -713,7 +713,6 @@ def analysis_regression(cal_ds, market_features):
     If domain coefficients shrink to zero in Model 3, then microstructure
     explains the differences. If they survive, domain itself matters.
     """
-    import statsmodels.api as sm
     import statsmodels.formula.api as smf
 
     print("\n" + "=" * 60)
@@ -738,11 +737,13 @@ def analysis_regression(cal_ds, market_features):
 
     df["horizon"] = df["days_to_resolution"].apply(assign_horizon)
 
-    # Merge market-level controls
+    # Merge the market-level columns that are NOT used as controls (they are
+    # whole-lifetime aggregates, i.e. the market's future as of any observation).
+    # They are carried only for the daily-only robustness split and reporting.
     controls_cols = [
         "market_ticker", "total_volume", "avg_spread", "n_price_observations",
-        "duration_hours", "price_volatility", "late_price_move", "price_range",
-        "late_volume_share",
+        "price_volatility", "late_price_move", "price_range",
+        "late_volume_share", "is_hourly_clock",
     ]
     mf_controls = market_features[[c for c in controls_cols if c in market_features.columns]].copy()
 
@@ -763,12 +764,21 @@ def analysis_regression(cal_ds, market_features):
     print(f"  Markets: {df['market_ticker'].nunique()}")
     print(f"  Categories: {sorted(valid_cats)}")
 
-    # Log-transform volume (highly skewed)
-    df["log_volume"] = np.log1p(df["total_volume"])
+    # Log-transform volume (highly skewed). Uses volume accumulated up to the
+    # observation, not the market's lifetime total.
+    df["log_volume"] = np.log1p(df["pit_cum_volume"])
 
     # Drop rows with NaN in key columns
     base_cols = ["squared_error", "category", "horizon"]
     df = df.dropna(subset=base_cols)
+
+    # Observations from the same market share a price path, so residuals are
+    # strongly correlated within market. Default IID errors would understate
+    # every standard error by a large factor; cluster on market instead.
+    def fit_clustered(formula, data):
+        return smf.ols(formula, data=data).fit(
+            cov_type="cluster", cov_kwds={"groups": data["market_ticker"]}
+        )
 
     # Reference category = Politics (best calibrated, natural baseline)
     if "Politics" in valid_cats:
@@ -783,7 +793,7 @@ def analysis_regression(cal_ds, market_features):
     print("  " + "─" * 56)
     print("  MODEL 1: squared_error ~ domain")
     print("  " + "─" * 56)
-    m1 = smf.ols(f'squared_error ~ C(category, Treatment("{ref_cat}"))', data=df).fit()
+    m1 = fit_clustered(f'squared_error ~ C(category, Treatment("{ref_cat}"))', df)
     print(f"  R² = {m1.rsquared:.4f}  Adj-R² = {m1.rsquared_adj:.4f}  n = {int(m1.nobs)}")
     _print_domain_coefs(m1, ref_cat)
 
@@ -791,18 +801,24 @@ def analysis_regression(cal_ds, market_features):
     print(f"\n  " + "─" * 56)
     print("  MODEL 2: squared_error ~ domain + horizon")
     print("  " + "─" * 56)
-    m2 = smf.ols(
+    m2 = fit_clustered(
         f'squared_error ~ C(category, Treatment("{ref_cat}")) + C(horizon, Treatment("30+ days"))',
-        data=df
-    ).fit()
+        df
+    )
     print(f"  R² = {m2.rsquared:.4f}  Adj-R² = {m2.rsquared_adj:.4f}  n = {int(m2.nobs)}")
     _print_domain_coefs(m2, ref_cat)
     _print_horizon_coefs(m2)
 
     # ── Model 3: Domain + Horizon + Controls ──
+    # Controls are measured as of the observation. The earlier lifetime versions
+    # (total_volume, avg_spread, price_range over the whole market) encoded the
+    # future: lifetime price range in particular partly encodes how far the price
+    # eventually travelled toward the outcome, which is mechanically tied to the
+    # squared error being predicted. duration_hours is fixed at open and so is
+    # legitimately known ex ante.
     control_vars = []
-    for c in ["log_volume", "avg_spread", "n_price_observations", "duration_hours",
-              "price_range", "cat_base_rate_imbalance"]:
+    for c in ["log_volume", "pit_avg_spread", "pit_n_obs", "duration_hours",
+              "pit_price_range", "cat_base_rate_imbalance"]:
         if c in df.columns and df[c].notna().sum() > len(df) * 0.5:
             control_vars.append(c)
 
@@ -814,10 +830,10 @@ def analysis_regression(cal_ds, market_features):
     print("  " + "─" * 56)
 
     controls_formula = " + ".join(control_vars)
-    m3 = smf.ols(
+    m3 = fit_clustered(
         f'squared_error ~ C(category, Treatment("{ref_cat}")) + C(horizon, Treatment("30+ days")) + {controls_formula}',
-        data=df_m3
-    ).fit()
+        df_m3
+    )
     print(f"  R² = {m3.rsquared:.4f}  Adj-R² = {m3.rsquared_adj:.4f}  n = {int(m3.nobs)}")
     _print_domain_coefs(m3, ref_cat)
     _print_horizon_coefs(m3)
@@ -827,20 +843,20 @@ def analysis_regression(cal_ds, market_features):
     print(f"\n  " + "─" * 56)
     print(f"  MODEL 4: squared_error ~ horizon + controls (NO domain)")
     print("  " + "─" * 56)
-    m4 = smf.ols(
+    m4 = fit_clustered(
         f'squared_error ~ C(horizon, Treatment("30+ days")) + {controls_formula}',
-        data=df_m3
-    ).fit()
+        df_m3
+    )
     print(f"  R² = {m4.rsquared:.4f}  Adj-R² = {m4.rsquared_adj:.4f}  n = {int(m4.nobs)}")
 
     # ── Model 5: Domain × Horizon interaction + controls ──
     print(f"\n  " + "─" * 56)
     print(f"  MODEL 5: squared_error ~ domain * horizon + controls")
     print("  " + "─" * 56)
-    m5 = smf.ols(
+    m5 = fit_clustered(
         f'squared_error ~ C(category, Treatment("{ref_cat}")) * C(horizon, Treatment("30+ days")) + {controls_formula}',
-        data=df_m3
-    ).fit()
+        df_m3
+    )
     print(f"  R² = {m5.rsquared:.4f}  Adj-R² = {m5.rsquared_adj:.4f}  n = {int(m5.nobs)}")
 
     # Count significant interaction terms
@@ -1073,15 +1089,7 @@ def _plot_regression(m2, m3, ref_cat, valid_cats):
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3, axis="x")
 
-    # Right: R² comparison
-    models = ["Domain\nonly", "Domain +\nhorizon", "Domain + horizon\n+ controls", "Controls\nonly"]
-    r2_vals = [
-        float(m2.rsquared) - (float(m2.rsquared) - float(m2.rsquared)),  # placeholder
-        float(m2.rsquared),
-        float(m3.rsquared),
-        0,  # will be filled
-    ]
-    # We don't have m1 and m4 here, so just show the comparison conceptually
+    # Right: shrinkage of the largest domain effect once controls are added
     ax2.bar(["Before\ncontrols", "After\ncontrols"], [
         max(abs(c) for c in coefs_before),
         max(abs(c) for c in coefs_after),
@@ -1205,6 +1213,39 @@ def analysis_recalibration(cal_ds, market_features, n_bootstrap=1000, n_folds=5,
     print(f"    Recalibrated Brier: {recal_brier:.4f}")
     print(f"    Improvement:        {improvement:+.1f}%")
 
+    # ── Seed stability ──
+    # A single fold split decides this number, and the split is a lottery: which
+    # markets land in which fold moves the result by several points. Re-run the
+    # whole CV under different splits so the headline is not one draw.
+    def cv_improvement(cv_seed):
+        r = np.random.RandomState(cv_seed)
+        mkts = df["market_ticker"].unique().copy()
+        r.shuffle(mkts)
+        sub = df[["market_ticker", "category", "horizon", "implied_prob", "result_binary"]].copy()
+        sub["recalibrated_prob"] = np.nan
+        for f_i in np.array_split(mkts, n_folds):
+            test_mkts = set(f_i)
+            train = sub[~sub["market_ticker"].isin(test_mkts)]
+            mask = sub["market_ticker"].isin(test_mkts)
+            fn = _fit_platt(train)
+            sub.loc[mask, "recalibrated_prob"] = sub.loc[mask].apply(fn, axis=1)
+        sub = sub.dropna(subset=["recalibrated_prob"])
+        raw = ((sub["implied_prob"] - sub["result_binary"]) ** 2).mean()
+        rec = ((sub["recalibrated_prob"] - sub["result_binary"]) ** 2).mean()
+        return (raw - rec) / raw * 100
+
+    stability_seeds = [seed + k for k in range(10)]
+    improvements = [float(cv_improvement(s)) for s in stability_seeds]
+    imp_mean, imp_sd = float(np.mean(improvements)), float(np.std(improvements))
+    imp_se = imp_sd / np.sqrt(len(improvements))
+    print(f"\n    Across {len(stability_seeds)} fold splits: mean {imp_mean:+.1f}%, "
+          f"sd {imp_sd:.1f}, range [{min(improvements):+.1f}%, {max(improvements):+.1f}%]")
+    if abs(imp_mean) < 2 * imp_se:
+        print("    → No reliable overall improvement: the effect is indistinguishable")
+        print("      from zero, and the single-split number is mostly split noise.")
+    elif imp_mean < 0:
+        print("    → Recalibration makes calibration WORSE out-of-sample overall.")
+
     # Per-category
     print(f"\n    {'Category':<25s} {'Raw BS':>8s} {'Recal BS':>9s} {'Change':>8s} {'n':>6s}")
     print("    " + "-" * 60)
@@ -1241,10 +1282,29 @@ def analysis_recalibration(cal_ds, market_features, n_bootstrap=1000, n_folds=5,
     ref_cat = "Politics" if "Politics" in valid_cats else valid_cats[0]
     bootstrap_coefs = {cat: [] for cat in valid_cats if cat != ref_cat}
 
+    # Resample markets with replacement. Selecting with .isin() would silently
+    # collapse duplicate draws, turning each replicate into an unweighted ~63%
+    # subsample and inflating every interval. Weighting each market by how many
+    # times it was drawn reproduces a true bootstrap replicate.
+    obs_by_market = {m: g for m, g in df.groupby("market_ticker")["squared_error"]}
+    cat_by_market = df.groupby("market_ticker")["category"].first()
+
     for i in range(n_bootstrap):
         boot_markets = rng.choice(all_markets, len(all_markets), replace=True)
-        boot_df = df[df["market_ticker"].isin(boot_markets)]
-        cat_means = boot_df.groupby("category")["squared_error"].mean()
+        tickers, counts = np.unique(boot_markets, return_counts=True)
+
+        # Weighted mean of squared_error per category, weights = draw counts.
+        sums, weights = {}, {}
+        for ticker, count in zip(tickers, counts):
+            cat = cat_by_market.get(ticker)
+            vals = obs_by_market.get(ticker)
+            if cat is None or vals is None:
+                continue
+            sums[cat] = sums.get(cat, 0.0) + vals.sum() * count
+            weights[cat] = weights.get(cat, 0) + len(vals) * count
+        cat_means = pd.Series(
+            {c: sums[c] / weights[c] for c in sums if weights[c] > 0}
+        )
         ref_mean = cat_means.get(ref_cat, np.nan)
         for cat in bootstrap_coefs:
             if cat in cat_means.index:
@@ -1280,6 +1340,12 @@ def analysis_recalibration(cal_ds, market_features, n_bootstrap=1000, n_folds=5,
         "raw_brier": round(float(raw_brier), 6),
         "recalibrated_brier": round(float(recal_brier), 6),
         "improvement_pct": round(float(improvement), 2),
+        "improvement_mean_pct": round(imp_mean, 2),
+        "improvement_sd_pct": round(imp_sd, 2),
+        "improvement_range_pct": [round(min(improvements), 2), round(max(improvements), 2)],
+        "improvement_se_pct": round(float(imp_se), 2),
+        "improvement_reliable": bool(abs(imp_mean) > 2 * imp_se),
+        "n_seeds": len(stability_seeds),
         "n_observations": len(df),
         "n_markets": int(df["market_ticker"].nunique()),
         "n_folds": n_folds,
@@ -1430,9 +1496,11 @@ def analysis_adjusted_model(cal_ds, market_features, n_folds=5, n_bootstrap=1000
 
     df["horizon"] = df["days_to_resolution"].apply(assign_horizon)
 
-    # Merge market-level features
-    merge_cols = ["market_ticker", "total_volume", "avg_spread", "n_price_observations",
-                  "duration_hours", "price_range"]
+    # Merge the market-level clock flag only. Microstructure comes from the
+    # point-in-time columns on cal_ds; the lifetime aggregates that used to be
+    # merged here described each market's future relative to the observation
+    # being predicted, which leaked into the cross-validated model below.
+    merge_cols = ["market_ticker", "is_hourly_clock"]
     mf_merge = market_features[[c for c in merge_cols if c in market_features.columns]].copy()
     df = df.merge(mf_merge, on="market_ticker", how="left", suffixes=("", "_mkt"))
 
@@ -1440,7 +1508,7 @@ def analysis_adjusted_model(cal_ds, market_features, n_folds=5, n_bootstrap=1000
     valid_cats = cat_counts[cat_counts >= 100].index.tolist()
     df = df[df["category"].isin(valid_cats)].copy()
 
-    df["log_volume"] = np.log1p(df["total_volume"])
+    df["log_volume"] = np.log1p(df["pit_cum_volume"])
 
     # Base rate
     cat_br = market_features.groupby("category")["result_binary"].mean()
@@ -1456,7 +1524,7 @@ def analysis_adjusted_model(cal_ds, market_features, n_folds=5, n_bootstrap=1000
     print(f"\n  ── Part 1: Domain-Adjusted Probability Model ──")
 
     # Feature matrix: raw price + domain dummies + horizon dummies + microstructure
-    micro_features = ["log_volume", "avg_spread", "duration_hours", "price_range"]
+    micro_features = ["log_volume", "pit_avg_spread", "duration_hours", "pit_price_range"]
     micro_features = [c for c in micro_features if c in df.columns and df[c].notna().sum() > len(df) * 0.5]
 
     df_model = df.dropna(subset=micro_features + ["implied_prob"]).copy()
@@ -1563,16 +1631,16 @@ def analysis_adjusted_model(cal_ds, market_features, n_folds=5, n_bootstrap=1000
 
     ref_cat = "Politics" if "Politics" in valid_cats else valid_cats[0]
 
-    # Define alternative control sets
+    # Define alternative control sets (all point-in-time)
     alt_control_sets = {
-        "Minimal (volume + spread)": ["log_volume", "avg_spread"],
-        "Microstructure (volume + spread + duration)": ["log_volume", "avg_spread", "duration_hours"],
-        "Full (all 6 controls)": ["log_volume", "avg_spread", "n_price_observations",
-                                   "duration_hours", "price_range", "cat_base_rate_imbalance"],
-        "No spread": ["log_volume", "n_price_observations", "duration_hours",
-                       "price_range", "cat_base_rate_imbalance"],
-        "No volume": ["avg_spread", "n_price_observations", "duration_hours",
-                       "price_range", "cat_base_rate_imbalance"],
+        "Minimal (volume + spread)": ["log_volume", "pit_avg_spread"],
+        "Microstructure (volume + spread + duration)": ["log_volume", "pit_avg_spread", "duration_hours"],
+        "Full (all 6 controls)": ["log_volume", "pit_avg_spread", "pit_n_obs",
+                                   "duration_hours", "pit_price_range", "cat_base_rate_imbalance"],
+        "No spread": ["log_volume", "pit_n_obs", "duration_hours",
+                       "pit_price_range", "cat_base_rate_imbalance"],
+        "No volume": ["pit_avg_spread", "pit_n_obs", "duration_hours",
+                       "pit_price_range", "cat_base_rate_imbalance"],
     }
 
     # Filter to available columns
@@ -1583,25 +1651,39 @@ def analysis_adjusted_model(cal_ds, market_features, n_folds=5, n_bootstrap=1000
     robustness_results = []
     key_cats = ["Crypto", "Financials", "Sports", "Science and Technology", "Entertainment"]
 
+    # Each spec is (label, controls, sample). The daily-only spec re-runs the full
+    # control set on markets that have real daily candles, dropping the ones
+    # backfilled with hourly data. Those are almost entirely Sports and Crypto —
+    # the two categories whose results get interpreted most — so their effects
+    # need to hold up when the clock is uniform.
+    specs = [(name, controls, df) for name, controls in alt_control_sets.items() if controls]
+    if "is_hourly_clock" in df.columns:
+        df_daily = df[df["is_hourly_clock"] != 1]
+        if df_daily["market_ticker"].nunique() >= 50:
+            specs.append(
+                ("Full, daily-clock markets only", alt_control_sets["Full (all 6 controls)"], df_daily)
+            )
+
     print(f"\n  {'Control Set':<45s} {'R²':>6s} {'R² lift':>8s} {'#Surv':>6s}")
     print("  " + "-" * 70)
 
-    for set_name, controls in alt_control_sets.items():
+    for set_name, controls, df_source in specs:
         if not controls:
             continue
-        df_r = df.dropna(subset=controls)
+        df_r = df_source.dropna(subset=controls)
         cf = " + ".join(controls)
 
         try:
             m_with = smf.ols(
                 f'squared_error ~ C(category, Treatment("{ref_cat}")) + C(horizon, Treatment("30+ days")) + {cf}',
                 data=df_r
-            ).fit()
+            ).fit(cov_type="cluster", cov_kwds={"groups": df_r["market_ticker"]})
             m_without = smf.ols(
                 f'squared_error ~ C(horizon, Treatment("30+ days")) + {cf}',
                 data=df_r
-            ).fit()
-        except Exception:
+            ).fit(cov_type="cluster", cov_kwds={"groups": df_r["market_ticker"]})
+        except Exception as exc:
+            print(f"  {set_name:<45s}  SKIPPED: {exc}")
             continue
 
         r2 = m_with.rsquared
@@ -1631,6 +1713,7 @@ def analysis_adjusted_model(cal_ds, market_features, n_folds=5, n_bootstrap=1000
             "r2_lift": round(float(lift), 6),
             "n_surviving": n_surv,
             "n_obs": int(m_with.nobs),
+            "n_markets": int(df_r["market_ticker"].nunique()),
             "key_category_coefs": cat_coefs_alt,
         })
 
@@ -1685,7 +1768,7 @@ def analysis_adjusted_model(cal_ds, market_features, n_folds=5, n_bootstrap=1000
                 m = smf.ols(
                     f'squared_error ~ C(category, Treatment("{ref_cat}")) + C(horizon, Treatment("30+ days")) + {cf_full}',
                     data=df_sub
-                ).fit()
+                ).fit(cov_type="cluster", cov_kwds={"groups": df_sub["market_ticker"]})
                 param = [p for p in m.params.index if f"[T.{cat}]" in p]
                 if param:
                     coef = float(m.params[param[0]])
@@ -1819,29 +1902,56 @@ def compute_summary_stats(market_features, cal_ds):
     """Compute summary statistics for the dashboard."""
     mf = market_features.dropna(subset=["last_price", "brier_score"])
 
-    # Per-category stats
+    def horizon_brier(d, col):
+        """Brier at a fixed horizon, over the markets that lived that long."""
+        dd = d.dropna(subset=[col])
+        if len(dd) < 3:
+            return None, 0
+        return round(brier_score(dd[col].values, dd["result_binary"].values), 4), len(dd)
+
+    # Per-category stats. brier_last_tick scores the final price before close,
+    # which for categories whose outcome becomes public early (a called election
+    # trades at 0.99 for days) is not a forecast at all — it is reported as a
+    # diagnostic. brier_1d/7d are the honest comparison.
     cat_stats = {}
     for cat in mf["category"].value_counts().index:
         cd = mf[mf["category"] == cat]
         if len(cd) >= 3:
+            b1, n1 = horizon_brier(cd, "brier_1d_before")
+            b7, n7 = horizon_brier(cd, "brier_7d_before")
             cat_stats[cat] = {
                 "n_markets": len(cd),
                 "brier": round(brier_score(cd["last_price"].values, cd["result_binary"].values), 4),
+                "brier_last_tick": round(brier_score(cd["last_price"].values, cd["result_binary"].values), 4),
+                "brier_1d_before": b1,
+                "n_markets_1d": n1,
+                "brier_7d_before": b7,
+                "n_markets_7d": n7,
                 "avg_volume": round(cd["total_volume"].mean()),
                 "yes_rate": round((cd["result"] == "yes").mean(), 3),
             }
 
+    b1_all, _ = horizon_brier(mf, "brier_1d_before")
+    b7_all, _ = horizon_brier(mf, "brier_7d_before")
+
     return {
         "total_markets": len(mf),
         "total_observations": len(cal_ds),
-        "n_categories": mf["category"].nunique(),
+        # Categories actually reported (those clearing the 3-market floor), not
+        # every category present — the two disagreed and the dashboard showed the
+        # larger number above a chart with fewer bars.
+        "n_categories": len(cat_stats),
+        "n_categories_all": int(mf["category"].nunique()),
         "yes_outcomes": int((mf["result"] == "yes").sum()),
         "no_outcomes": int((mf["result"] == "no").sum()),
         "overall_brier_score": round(brier_score(mf["last_price"].values, mf["result_binary"].values), 4),
+        "overall_brier_1d_before": b1_all,
+        "overall_brier_7d_before": b7_all,
         "overall_log_loss": round(log_loss(mf["last_price"].values, mf["result_binary"].values), 4),
         "mean_volume": round(mf["total_volume"].mean()),
         "median_volume": round(mf["total_volume"].median()),
         "mean_duration_hours": round(mf["duration_hours"].mean(), 1),
+        "n_hourly_clock_markets": int(mf["is_hourly_clock"].sum()) if "is_hourly_clock" in mf.columns else 0,
         "categories": mf["category"].value_counts().to_dict(),
         "liquidity_distribution": mf["liquidity_bucket"].value_counts().to_dict(),
         "category_stats": cat_stats,

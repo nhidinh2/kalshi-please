@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useDashboardData } from "../hooks/useData";
+import { catColor } from "../constants";
 import {
   BarChart,
   Bar,
@@ -16,22 +17,6 @@ import {
   Legend,
   ReferenceLine,
 } from "recharts";
-
-const CAT_COLORS: Record<string, string> = {
-  Politics: "#2563eb",
-  Economics: "#10b981",
-  Sports: "#ef4444",
-  Entertainment: "#f59e0b",
-  "Climate and Weather": "#06b6d4",
-  Elections: "#8b5cf6",
-  Financials: "#ec4899",
-  Crypto: "#f97316",
-  Companies: "#84cc16",
-  World: "#6366f1",
-  Mentions: "#14b8a6",
-  "Science and Technology": "#a855f7",
-  Social: "#78716c",
-};
 
 export function DomainEffects() {
   const { data: dash, loading } = useDashboardData();
@@ -167,7 +152,7 @@ export function DomainEffects() {
                         background: "white", border: "1px solid #e5e7eb",
                         padding: "0.5rem", borderRadius: 4, fontSize: "0.8rem",
                       }}>
-                        <strong style={{ color: CAT_COLORS[d.category] }}>{d.category}</strong>
+                        <strong style={{ color: catColor(d.category) }}>{d.category}</strong>
                         <br />Before controls: {d.coef_no_controls?.toFixed(4)} (p={d.p_no_controls?.toFixed(4)})
                         <br />After controls: {d.coef_with_controls?.toFixed(4)} (p={d.p_with_controls?.toFixed(4)})
                         <br />{d.survives ? "Survives controls" : "Does not survive"}
@@ -219,7 +204,7 @@ export function DomainEffects() {
                         background: "white", border: "1px solid #e5e7eb",
                         padding: "0.5rem", borderRadius: 4, fontSize: "0.8rem",
                       }}>
-                        <strong style={{ color: CAT_COLORS[d.category] }}>{d.category}</strong>
+                        <strong style={{ color: catColor(d.category) }}>{d.category}</strong>
                         <br />Effect: {d.effect.toFixed(4)}
                         <br />95% CI: [{d.ci_lower.toFixed(4)}, {d.ci_upper.toFixed(4)}]
                         <br />{d.significant ? "Significant" : "Not significant"}
@@ -351,7 +336,7 @@ export function DomainEffects() {
                       lineHeight: 1.6,
                     }}
                   >
-                    <span style={{ color: CAT_COLORS[p.category], fontWeight: 700 }}>
+                    <span style={{ color: catColor(p.category), fontWeight: 700 }}>
                       {p.category}
                     </span>{" "}
                     {n.text.slice(n.text.indexOf("markets are") + 7)}
@@ -443,7 +428,7 @@ export function DomainEffects() {
                               background: "white", border: "1px solid #e5e7eb",
                               padding: "0.5rem", borderRadius: 4, fontSize: "0.8rem",
                             }}>
-                              <strong style={{ color: CAT_COLORS[d.category] }}>{d.category}</strong>
+                              <strong style={{ color: catColor(d.category) }}>{d.category}</strong>
                               <br />{label}: {d.x?.toFixed(4) ?? "N/A"}
                               <br />Brier: {d.y?.toFixed(4)}
                               <br />Markets: {d.z}
@@ -464,7 +449,7 @@ export function DomainEffects() {
                         {profilesSorted
                           .filter((p) => p[key as keyof typeof p] != null)
                           .map((p) => (
-                            <Cell key={p.category} fill={CAT_COLORS[p.category] || "#666"} />
+                            <Cell key={p.category} fill={catColor(p.category)} />
                           ))}
                       </Scatter>
                     </ScatterChart>

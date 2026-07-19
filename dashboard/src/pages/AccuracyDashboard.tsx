@@ -1,4 +1,5 @@
 import { useDashboardData, useSummary } from "../hooks/useData";
+import { catColor, TIME_HORIZONS, TIME_COLORS } from "../constants";
 import {
   BarChart,
   Bar,
@@ -10,24 +11,13 @@ import {
   Cell,
 } from "recharts";
 
-const CAT_COLORS: Record<string, string> = {
-  Politics: "#2563eb",
-  Economics: "#10b981",
-  Sports: "#ef4444",
-  Entertainment: "#f59e0b",
-  "Climate and Weather": "#06b6d4",
-  Elections: "#8b5cf6",
-  Financials: "#ec4899",
-  Crypto: "#f97316",
-  Companies: "#84cc16",
-  World: "#6366f1",
-  Mentions: "#14b8a6",
-  "Science and Technology": "#a855f7",
-  Social: "#78716c",
-};
-
-const TIME_HORIZONS = ["30+ days", "7-30 days", "1-7 days", "< 24 hours"];
-const TIME_COLORS = ["#ef4444", "#f59e0b", "#10b981", "#2563eb"];
+// Average that treats a genuine 0.0 as a value, not as absent. The old code used
+// .filter(Boolean), which drops 0.0 — and Elections/Social sit near there.
+function mean(vals: (number | null | undefined)[]): number | null {
+  const nums = vals.filter((v): v is number => typeof v === "number");
+  if (nums.length === 0) return null;
+  return nums.reduce((s, v) => s + v, 0) / nums.length;
+}
 
 export function AccuracyDashboard() {
   const { data: summary, loading: ls } = useSummary();
@@ -38,33 +28,39 @@ export function AccuracyDashboard() {
 
   const catStats = summary.category_stats;
 
-  // Brier by category bar chart data
+  // Brier by category, one day before close. This is the real forecasting test:
+  // the last-tick price flatters categories whose outcome becomes public before
+  // the market closes (a called election trades at 0.99 for days). Categories
+  // with fewer than 5 markets that far out are dropped as too thin to trust.
   const catBrier = Object.entries(catStats)
-    .map(([cat, stats]) => ({ category: cat, brier: stats.brier, n: stats.n_markets }))
+    .filter(([, s]) => s.brier_1d_before != null && s.n_markets_1d >= 5)
+    .map(([cat, s]) => ({
+      category: cat,
+      brier: s.brier_1d_before as number,
+      brierLast: s.brier_last_tick,
+      n: s.n_markets_1d,
+    }))
     .sort((a, b) => a.brier - b.brier);
 
   // Brier by time horizon
-  const timeBrier = Object.entries(dash.time_horizon_calibration)
-    .map(([label, bins]) => ({
-      horizon: label,
-      brier: bins[0]?.brier_score ?? 0,
-      n: bins[0]?.n_observations ?? 0,
-    }));
+  const timeBrier = Object.entries(dash.time_horizon_calibration).map(([label, bins]) => ({
+    horizon: label,
+    brier: bins[0]?.brier_score ?? 0,
+    n: bins[0]?.n_observations ?? 0,
+  }));
 
   // Domain x time heatmap data
   const matrix = dash.domain_time_matrix;
   const heatmapRows = Object.entries(matrix)
-    .filter(([_, horizons]) => Object.keys(horizons).length > 0)
+    .filter(([, horizons]) => Object.keys(horizons).length > 0)
     .map(([cat, horizons]) => {
-      const row: any = { category: cat };
-      for (const h of TIME_HORIZONS) {
-        row[h] = horizons[h]?.brier ?? null;
-      }
+      const row: Record<string, string | number | null> = { category: cat };
+      for (const h of TIME_HORIZONS) row[h] = horizons[h]?.brier ?? null;
       return row;
     })
     .sort((a, b) => {
-      const aAvg = TIME_HORIZONS.map((h) => a[h]).filter(Boolean).reduce((s: number, v: number) => s + v, 0) / Math.max(TIME_HORIZONS.map((h) => a[h]).filter(Boolean).length, 1);
-      const bAvg = TIME_HORIZONS.map((h) => b[h]).filter(Boolean).reduce((s: number, v: number) => s + v, 0) / Math.max(TIME_HORIZONS.map((h) => b[h]).filter(Boolean).length, 1);
+      const aAvg = mean(TIME_HORIZONS.map((h) => a[h] as number | null)) ?? Infinity;
+      const bAvg = mean(TIME_HORIZONS.map((h) => b[h] as number | null)) ?? Infinity;
       return aAvg - bAvg;
     });
 
@@ -85,8 +81,8 @@ export function AccuracyDashboard() {
           <div className="stat-label">Price Observations</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{summary.overall_brier_score}</div>
-          <div className="stat-label">Overall Brier Score</div>
+          <div className="stat-value">{summary.overall_brier_1d_before ?? "—"}</div>
+          <div className="stat-label">Brier, 1 Day Before Close</div>
         </div>
       </div>
 
@@ -94,7 +90,11 @@ export function AccuracyDashboard() {
       <div className="card">
         <h2>Forecast Accuracy by Category</h2>
         <p style={{ color: "var(--gray-500)", fontSize: "0.85rem", marginBottom: "1rem" }}>
-          Brier score (lower = more accurate). Not all categories are equal.
+          Brier score one day before the market closes (lower = more accurate) —
+          the price while the outcome is still genuinely uncertain. The faint bar
+          is the last traded price, which for many markets is set after the result
+          is already public and so overstates accuracy. Categories with fewer than
+          5 markets one day out are omitted.
         </p>
         <div className="chart-container">
           <ResponsiveContainer width="100%" height="100%">
@@ -103,18 +103,20 @@ export function AccuracyDashboard() {
               <XAxis type="number" domain={[0, "auto"]} fontSize={12} />
               <YAxis type="category" dataKey="category" width={115} fontSize={11} />
               <Tooltip
-                formatter={(v: any) => Number(v).toFixed(4)}
+                formatter={(v, name) => [Number(v).toFixed(4), String(name)]}
                 labelFormatter={(l) => {
                   const item = catBrier.find((c) => c.category === l);
                   return `${l} (n=${item?.n ?? "?"})`;
                 }}
               />
-              <Bar dataKey="brier" radius={[0, 4, 4, 0]} name="Brier Score">
+              <Bar dataKey="brierLast" radius={[0, 4, 4, 0]} name="Last tick" fillOpacity={0.25}>
                 {catBrier.map((entry) => (
-                  <Cell
-                    key={entry.category}
-                    fill={CAT_COLORS[entry.category] || "#6b7280"}
-                  />
+                  <Cell key={entry.category} fill={catColor(entry.category)} />
+                ))}
+              </Bar>
+              <Bar dataKey="brier" radius={[0, 4, 4, 0]} name="1 day before">
+                {catBrier.map((entry) => (
+                  <Cell key={entry.category} fill={catColor(entry.category)} />
                 ))}
               </Bar>
             </BarChart>
@@ -164,7 +166,7 @@ export function AccuracyDashboard() {
                 <tr key={row.category}>
                   <td style={{ fontWeight: 600 }}>{row.category}</td>
                   {TIME_HORIZONS.map((h) => {
-                    const val = row[h];
+                    const val = row[h] as number | null;
                     if (val === null) return <td key={h} style={{ textAlign: "center", color: "#ccc" }}>---</td>;
                     // Color: green (0) to red (0.3)
                     const ratio = Math.min(val / 0.3, 1);

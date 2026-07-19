@@ -40,6 +40,11 @@ export interface MarketFeature {
 export interface CategoryStats {
   n_markets: number;
   brier: number;
+  brier_last_tick: number;
+  brier_1d_before: number | null;
+  n_markets_1d: number;
+  brier_7d_before: number | null;
+  n_markets_7d: number;
   avg_volume: number;
   yes_rate: number;
 }
@@ -48,13 +53,17 @@ export interface Summary {
   total_markets: number;
   total_observations: number;
   n_categories: number;
+  n_categories_all: number;
   yes_outcomes: number;
   no_outcomes: number;
   overall_brier_score: number;
+  overall_brier_1d_before: number | null;
+  overall_brier_7d_before: number | null;
   overall_log_loss: number;
   mean_volume: number;
   median_volume: number;
   mean_duration_hours: number;
+  n_hourly_clock_markets: number;
   categories: Record<string, number>;
   liquidity_distribution: Record<string, number>;
   category_stats: Record<string, CategoryStats>;
@@ -176,6 +185,12 @@ export interface RecalibrationData {
   raw_brier: number;
   recalibrated_brier: number;
   improvement_pct: number;
+  improvement_mean_pct: number;
+  improvement_sd_pct: number;
+  improvement_se_pct: number;
+  improvement_range_pct: [number, number];
+  improvement_reliable: boolean;
+  n_seeds: number;
   n_observations: number;
   n_markets: number;
   n_folds: number;

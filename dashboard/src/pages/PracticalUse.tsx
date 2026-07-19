@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useDashboardData, useMarketFeatures } from "../hooks/useData";
 import type { MarketFeature } from "../types";
+import { catColor } from "../constants";
 import {
   BarChart,
   Bar,
@@ -14,22 +15,6 @@ import {
   LineChart,
   Line,
 } from "recharts";
-
-const CAT_COLORS: Record<string, string> = {
-  Politics: "#2563eb",
-  Economics: "#10b981",
-  Sports: "#ef4444",
-  Entertainment: "#f59e0b",
-  "Climate and Weather": "#06b6d4",
-  Elections: "#8b5cf6",
-  Financials: "#ec4899",
-  Crypto: "#f97316",
-  Companies: "#84cc16",
-  World: "#6366f1",
-  Mentions: "#14b8a6",
-  "Science and Technology": "#a855f7",
-  Social: "#78716c",
-};
 
 type SortKey = keyof MarketFeature;
 
@@ -62,11 +47,19 @@ export function PracticalUse() {
         return true;
       })
       .sort((a, b) => {
-        const va = a[sortKey] ?? 0;
-        const vb = b[sortKey] ?? 0;
-        if (va < vb) return sortDesc ? 1 : -1;
-        if (va > vb) return sortDesc ? -1 : 1;
-        return 0;
+        const va = a[sortKey];
+        const vb = b[sortKey];
+        const dir = sortDesc ? -1 : 1;
+        // Nulls always sort last, regardless of direction.
+        const aNull = va === null || va === undefined;
+        const bNull = vb === null || vb === undefined;
+        if (aNull && bNull) return 0;
+        if (aNull) return 1;
+        if (bNull) return -1;
+        if (typeof va === "string" && typeof vb === "string") {
+          return dir * va.localeCompare(vb);
+        }
+        return dir * (Number(va) - Number(vb));
       });
   }, [markets, search, categoryFilter, sortKey, sortDesc]);
 
@@ -94,7 +87,15 @@ export function PracticalUse() {
           <h2>Out-of-Sample Recalibration ({recal.n_folds}-Fold CV)</h2>
           <p style={{ fontSize: "0.9rem", lineHeight: 1.7, marginBottom: "1rem", color: "var(--gray-700)" }}>
             A domain-aware recalibration layer adjusts raw market prices using Platt scaling
-            per (category, horizon) group. Tested out-of-sample to confirm the signal is real.
+            per (category, horizon) group. Averaged over {recal.n_seeds} cross-validation
+            splits, the overall improvement is{" "}
+            <strong>{recal.improvement_mean_pct >= 0 ? "+" : ""}{recal.improvement_mean_pct.toFixed(1)}%
+            ± {recal.improvement_se_pct.toFixed(1)}% (SE)</strong> —{" "}
+            {recal.improvement_reliable
+              ? "a reliable effect."
+              : "indistinguishable from zero. The layer does not improve calibration overall; " +
+                "the single-split figure below is mostly split noise. It helps where miscalibration " +
+                "is large (below) and hurts small or already-good categories."}
           </p>
           <div className="stats-grid">
             <div className="stat-card">
@@ -103,17 +104,22 @@ export function PracticalUse() {
             </div>
             <div className="stat-card">
               <div className="stat-value">{recal.recalibrated_brier.toFixed(4)}</div>
-              <div className="stat-label">Recalibrated Brier</div>
+              <div className="stat-label">Recalibrated Brier (1 split)</div>
             </div>
             <div className="stat-card">
-              <div className="stat-value" style={{ color: recal.improvement_pct > 0 ? "#10b981" : "#ef4444" }}>
-                {recal.improvement_pct > 0 ? "+" : ""}{recal.improvement_pct.toFixed(1)}%
+              <div
+                className="stat-value"
+                style={{ color: recal.improvement_reliable && recal.improvement_mean_pct > 0 ? "#10b981" : "#6b7280" }}
+              >
+                {recal.improvement_mean_pct >= 0 ? "+" : ""}{recal.improvement_mean_pct.toFixed(1)}%
               </div>
-              <div className="stat-label">Improvement</div>
+              <div className="stat-label">Mean improvement ({recal.n_seeds} splits)</div>
             </div>
             <div className="stat-card">
-              <div className="stat-value">{recal.n_observations.toLocaleString()}</div>
-              <div className="stat-label">Observations</div>
+              <div className="stat-value" style={{ fontSize: "1.1rem" }}>
+                [{recal.improvement_range_pct[0].toFixed(1)}%, {recal.improvement_range_pct[1].toFixed(1)}%]
+              </div>
+              <div className="stat-label">Range across splits</div>
             </div>
             <div className="stat-card">
               <div className="stat-value">{recal.n_markets.toLocaleString()}</div>
@@ -146,7 +152,7 @@ export function PracticalUse() {
                         background: "white", border: "1px solid #e5e7eb",
                         padding: "0.5rem", borderRadius: 4, fontSize: "0.8rem",
                       }}>
-                        <strong style={{ color: CAT_COLORS[d.category] }}>{d.category}</strong>
+                        <strong style={{ color: catColor(d.category) }}>{d.category}</strong>
                         <br />Raw Brier: {d.raw_brier.toFixed(4)}
                         <br />Recalibrated: {d.recalibrated_brier.toFixed(4)}
                         <br />Improvement: {d.improvement_pct > 0 ? "+" : ""}{d.improvement_pct.toFixed(1)}%
@@ -225,7 +231,7 @@ export function PracticalUse() {
                   </td>
                   <td>
                     <span style={{
-                      color: CAT_COLORS[m.category] || "#666",
+                      color: catColor(m.category),
                       fontWeight: 600,
                       fontSize: "0.8rem",
                     }}>
@@ -269,7 +275,7 @@ function MarketDetail({ market, onClose }: { market: MarketFeature; onClose: () 
   const outcome = market.result_binary * 100;
 
   return (
-    <div className="card" style={{ borderColor: CAT_COLORS[market.category] || "var(--blue-500)", borderWidth: 2 }}>
+    <div className="card" style={{ borderColor: catColor(market.category), borderWidth: 2 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
         <div>
           <h2 style={{ fontSize: "1.1rem" }}>
@@ -277,7 +283,7 @@ function MarketDetail({ market, onClose }: { market: MarketFeature; onClose: () 
           </h2>
           <p style={{ color: "var(--gray-500)", fontSize: "0.85rem", marginTop: "0.25rem" }}>
             {market.market_ticker} |{" "}
-            <span style={{ color: CAT_COLORS[market.category], fontWeight: 600 }}>{market.category}</span> |{" "}
+            <span style={{ color: catColor(market.category), fontWeight: 600 }}>{market.category}</span> |{" "}
             Resolved <span className={`badge badge-${market.result}`}>{market.result.toUpperCase()}</span>
           </p>
         </div>
@@ -324,7 +330,7 @@ function MarketDetail({ market, onClose }: { market: MarketFeature; onClose: () 
               <Tooltip formatter={(v: any) => `${Number(v).toFixed(1)}%`} />
               <ReferenceLine y={outcome} stroke={market.result === "yes" ? "#10b981" : "#ef4444"}
                 strokeDasharray="5 5" label={`Outcome: ${market.result.toUpperCase()}`} />
-              <Line type="monotone" dataKey="price" stroke={CAT_COLORS[market.category] || "#2563eb"}
+              <Line type="monotone" dataKey="price" stroke={catColor(market.category)}
                 strokeWidth={3} dot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
